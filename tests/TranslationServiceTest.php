@@ -169,7 +169,7 @@ final class TranslationServiceTest extends TestCase {
         $this->assertSame(2, $cache->count());
     }
 
-    public function test_cache_hit_does_not_claim_terminology_enforcement(): void {
+    public function test_cache_hit_carries_metadata_of_original_run(): void {
         $cache = new ArrayTranslationCache;
         $service = new TranslationService($this->createProvider(), $cache);
         $options = new TranslateOptions(glossary: [new GlossaryEntry('мир', 'Welt')]);
@@ -179,9 +179,10 @@ final class TranslationServiceTest extends TestCase {
 
         $this->assertTrue($result->fromCache);
         $this->assertSame(1, $this->providerCalls);
-        // Der Cache hält nur den Text — ob der Ursprungslauf die Begriffe
-        // wirklich erzwang (z.B. DeepL ohne Quellsprache: nein), weiß er nicht.
-        $this->assertFalse($result->deterministicTerminology);
+        // Der Cache speichert die Metadaten des Ursprungslaufs: dort wurde
+        // die Terminologie erzwungen und die Quellsprache erkannt.
+        $this->assertTrue($result->deterministicTerminology);
+        $this->assertSame('ru', $result->detectedSourceLang);
     }
 
     public function test_needs_translation_heuristic(): void {

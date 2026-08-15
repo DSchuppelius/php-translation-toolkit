@@ -17,7 +17,7 @@ use TranslationToolkit\Contracts\Interfaces\{
     TranslationProviderInterface,
     TranslationUsageListenerInterface
 };
-use TranslationToolkit\Entities\{TranslateOptions, TranslationResult};
+use TranslationToolkit\Entities\{CachedTranslation, TranslateOptions, TranslationResult};
 use TranslationToolkit\Exceptions\TranslationException;
 
 /**
@@ -80,31 +80,34 @@ final class TranslationService {
 
         $cached = $this->cache?->get($hash);
         if ($cached !== null) {
-            $result = new TranslationResult(
-                text: $cached,
-                sourceText: $text,
-                targetLang: $targetLang,
-                detectedSourceLang: null,
-                provider: $this->provider->getName(),
-                charCount: mb_strlen($text),
-                fromCache: true,
-                // Bewusst false: in diesem Aufruf wurde nichts erzwungen, und
-                // ob der ursprüngliche Lauf es tat, weiß der Cache nicht (er
-                // hält nur den Text). Der Schlüssel enthält Glossar UND
-                // Quellsprache — ein Treffer stammt also garantiert aus einem
-                // Lauf mit identischen Vorgaben.
-                deterministicTerminology: false,
-            );
+            $result = self::fromCache($cached, $text, $targetLang, $this->provider->getName());
             $this->usageListener?->onTranslation($result);
 
             return $result;
         }
 
         $result = $this->provider->translate($text, $targetLang, $sourceLang, $options);
-        $this->cache?->set($hash, $text, $sourceLang, $targetLang, $result->text, $this->provider->getName());
+        $this->cache?->set($hash, $sourceLang, $result);
         $this->usageListener?->onTranslation($result);
 
         return $result;
+    }
+
+    /**
+     * Ergebnis aus einem Cache-Treffer — trägt die Metadaten des
+     * Ursprungslaufs (erkannte Quellsprache, erzwungene Terminologie).
+     */
+    private static function fromCache(CachedTranslation $cached, string $sourceText, string $targetLang, string $provider): TranslationResult {
+        return new TranslationResult(
+            text: $cached->text,
+            sourceText: $sourceText,
+            targetLang: $targetLang,
+            detectedSourceLang: $cached->detectedSourceLang,
+            provider: $provider,
+            charCount: mb_strlen($sourceText),
+            fromCache: true,
+            deterministicTerminology: $cached->deterministicTerminology,
+        );
     }
 
     /**
@@ -145,16 +148,7 @@ final class TranslationService {
             $hash = self::cacheHash($text, $sourceLang, $targetLang, $this->provider->getName(), $options);
             $cached = $this->cache?->get($hash);
             if ($cached !== null) {
-                $result = new TranslationResult(
-                    text: $cached,
-                    sourceText: $text,
-                    targetLang: $targetLang,
-                    detectedSourceLang: null,
-                    provider: $this->provider->getName(),
-                    charCount: mb_strlen($text),
-                    fromCache: true,
-                    deterministicTerminology: false,
-                );
+                $result = self::fromCache($cached, $text, $targetLang, $this->provider->getName());
                 $this->usageListener?->onTranslation($result);
                 $results[$i] = $result;
                 continue;
@@ -172,7 +166,7 @@ final class TranslationService {
 
             foreach ($translated as $k => $result) {
                 $hash = self::cacheHash($missTexts[$k], $sourceLang, $targetLang, $this->provider->getName(), $options);
-                $this->cache?->set($hash, $missTexts[$k], $sourceLang, $targetLang, $result->text, $this->provider->getName());
+                $this->cache?->set($hash, $sourceLang, $result);
                 $this->usageListener?->onTranslation($result);
                 $results[$missIndexes[$k]] = $result;
             }

@@ -12,31 +12,26 @@ declare(strict_types=1);
 
 namespace TranslationToolkit\Contracts\Interfaces;
 
+use TranslationToolkit\Entities\{CachedTranslation, TranslationResult};
+
 /**
  * Port für den Übersetzungs-Cache.
  *
  * Der Cache ist bewusst global (nicht pro Mandant), damit identische Texte
  * nur einmal Übersetzungskosten verursachen (ADR-0010). Der Hash wird vom
- * TranslationService berechnet: SHA-256(text|source|target|provider).
+ * TranslationService berechnet: SHA-256(text|source|target|provider) plus
+ * Options-Fingerprint bei Nicht-Default-Optionen.
  */
 interface TranslationCacheInterface {
     /**
-     * Liefert die gecachte Übersetzung oder null bei Cache-Miss.
+     * Liefert den Cache-Treffer samt Metadaten des Ursprungslaufs oder null.
      */
-    public function get(string $hash): ?string;
+    public function get(string $hash): ?CachedTranslation;
 
     /**
-     * Legt eine Übersetzung im Cache ab.
-     *
-     * Die Zusatzfelder erlauben persistenten Implementierungen (DB) die
-     * Ablage von Kontext und Statistik (char_count, use_count, ...).
+     * Legt ein Übersetzungsergebnis im Cache ab. $sourceLang ist die
+     * ANGEFRAGTE Quellsprache (null = automatische Erkennung); die erkannte
+     * Sprache steht im Ergebnis.
      */
-    public function set(
-        string $hash,
-        string $sourceText,
-        ?string $sourceLang,
-        string $targetLang,
-        string $translatedText,
-        string $provider,
-    ): void;
+    public function set(string $hash, ?string $sourceLang, TranslationResult $result): void;
 }
