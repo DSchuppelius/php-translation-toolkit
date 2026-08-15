@@ -21,6 +21,7 @@ use TranslationToolkit\Contracts\Interfaces\GlossaryIdStoreInterface;
  */
 final class InMemoryGlossaryIdStore implements GlossaryIdStoreInterface {
     private ?string $glossaryId = null;
+    private ?string $syncedFingerprint = null;
 
     public function get(): ?string {
         return $this->glossaryId;
@@ -28,5 +29,13 @@ final class InMemoryGlossaryIdStore implements GlossaryIdStoreInterface {
 
     public function set(string $glossaryId): void {
         $this->glossaryId = $glossaryId;
+    }
+
+    public function getSyncedFingerprint(): ?string {
+        return $this->syncedFingerprint;
+    }
+
+    public function setSyncedFingerprint(string $fingerprint): void {
+        $this->syncedFingerprint = $fingerprint;
     }
 }

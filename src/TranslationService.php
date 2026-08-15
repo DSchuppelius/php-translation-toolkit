@@ -18,10 +18,14 @@ use TranslationToolkit\Contracts\Interfaces\{
     TranslationUsageListenerInterface
 };
 use TranslationToolkit\Entities\{TranslateOptions, TranslationResult};
+use TranslationToolkit\Exceptions\TranslationException;
 
 /**
  * Orchestriert Übersetzungen: Cache prüfen → Provider aufrufen → Cache füllen
  * → Nutzung melden (ADR-0010-Flow).
+ *
+ * $defaultOptions (z.B. ein Mandanten-Glossar des Hosts) greifen immer dann,
+ * wenn der Aufrufer keine eigenen Optionen übergibt.
  */
 final class TranslationService {
     public function __construct(
@@ -29,6 +33,7 @@ final class TranslationService {
         private readonly ?TranslationCacheInterface $cache = null,
         private readonly ?TranslationUsageListenerInterface $usageListener = null,
         private readonly string $defaultTargetLang = 'de',
+        private readonly ?TranslateOptions $defaultOptions = null,
     ) {}
 
     public function getProviderName(): string {
@@ -57,6 +62,7 @@ final class TranslationService {
         ?TranslateOptions $options = null,
     ): TranslationResult {
         $targetLang = strtolower($targetLang ?? $this->defaultTargetLang);
+        $options ??= $this->defaultOptions;
 
         if (trim($text) === '') {
             return new TranslationResult(
@@ -99,6 +105,82 @@ final class TranslationService {
         $this->usageListener?->onTranslation($result);
 
         return $result;
+    }
+
+    /**
+     * Übersetzt mehrere Texte: Cache-Treffer werden einzeln bedient, nur die
+     * verbleibenden Texte gehen gebündelt an den Provider
+     * ({@see TranslationProviderInterface::translateBatch()}).
+     *
+     * @param list<string> $texts
+     * @return list<TranslationResult> Ergebnisse in Eingabereihenfolge
+     */
+    public function translateMany(
+        array $texts,
+        ?string $targetLang = null,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): array {
+        $targetLang = strtolower($targetLang ?? $this->defaultTargetLang);
+        $options ??= $this->defaultOptions;
+
+        $results = [];
+        $missIndexes = [];
+        $missTexts = [];
+
+        foreach ($texts as $i => $text) {
+            if (trim($text) === '') {
+                $results[$i] = new TranslationResult(
+                    text: $text,
+                    sourceText: $text,
+                    targetLang: $targetLang,
+                    detectedSourceLang: null,
+                    provider: $this->provider->getName(),
+                    charCount: 0,
+                    fromCache: false,
+                );
+                continue;
+            }
+
+            $hash = self::cacheHash($text, $sourceLang, $targetLang, $this->provider->getName(), $options);
+            $cached = $this->cache?->get($hash);
+            if ($cached !== null) {
+                $result = new TranslationResult(
+                    text: $cached,
+                    sourceText: $text,
+                    targetLang: $targetLang,
+                    detectedSourceLang: null,
+                    provider: $this->provider->getName(),
+                    charCount: mb_strlen($text),
+                    fromCache: true,
+                    deterministicTerminology: false,
+                );
+                $this->usageListener?->onTranslation($result);
+                $results[$i] = $result;
+                continue;
+            }
+
+            $missIndexes[] = $i;
+            $missTexts[] = $text;
+        }
+
+        if ($missTexts !== []) {
+            $translated = $this->provider->translateBatch($missTexts, $targetLang, $sourceLang, $options);
+            if (count($translated) !== count($missTexts)) {
+                throw new TranslationException('Provider lieferte eine abweichende Anzahl Batch-Ergebnisse');
+            }
+
+            foreach ($translated as $k => $result) {
+                $hash = self::cacheHash($missTexts[$k], $sourceLang, $targetLang, $this->provider->getName(), $options);
+                $this->cache?->set($hash, $missTexts[$k], $sourceLang, $targetLang, $result->text, $this->provider->getName());
+                $this->usageListener?->onTranslation($result);
+                $results[$missIndexes[$k]] = $result;
+            }
+        }
+
+        ksort($results);
+
+        return array_values($results);
     }
 
     /**

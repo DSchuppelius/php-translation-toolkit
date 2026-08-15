@@ -58,6 +58,24 @@ abstract class AbstractHttpTranslationProvider extends ClientAbstract implements
     }
 
     /**
+     * Frühe, klare Fehlermeldung statt eines API-Fehlers — nur für Provider
+     * mit statischer Sprachliste sinnvoll (lazy geladene Listen würden hier
+     * einen zusätzlichen API-Aufruf provozieren).
+     *
+     * @param list<string> $supported
+     */
+    protected function assertSupportedTargetLanguage(string $targetLang, array $supported): void {
+        if (!in_array(strtolower($targetLang), $supported, true)) {
+            throw new TranslationException(sprintf(
+                'Zielsprache "%s" wird von %s nicht unterstützt (verfügbar: %s)',
+                $targetLang,
+                $this->providerLabel(),
+                implode(', ', $supported)
+            ));
+        }
+    }
+
+    /**
      * @return array<array-key, mixed>
      */
     protected function decodeJsonResponse(ResponseInterface $response): array {

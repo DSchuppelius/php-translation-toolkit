@@ -24,6 +24,7 @@ Entwurfsgrundlage: [ADR-0010](../ckonverter-architecture/adr/0010-translation-se
 | `Providers\LibreTranslateProvider` | Selbst gehostet, Glossar über Token-Maskierung |
 | `Caches\ArrayTranslationCache` | In-Memory-Cache für Tests/Kurzläufer |
 | `Stores\InMemoryGlossaryIdStore` | Glossar-ID für die Prozesslaufzeit (Tests/Kurzläufer) |
+| `Providers\CompositeProvider` | Fallback-Kette: erster verfügbarer Provider übersetzt, bei Fehlern der nächste |
 | `TranslationRegistry` | Statische Injektion für Umgebungen ohne Konstruktor-DI (analog `LoggerRegistry`) |
 
 ## Verwendung
@@ -51,6 +52,23 @@ if (TranslationRegistry::isAvailable() && TranslationService::needsTranslation($
     $text = TranslationRegistry::getService()->translate($text)->text;
 }
 ```
+
+### Batch, Default-Optionen und Fallback
+
+```php
+// Viele Texte: Cache-Treffer einzeln, Misses gebündelt (DeepL 50/Azure 100 je Request)
+$results = $service->translateMany($verwendungszwecke, 'de', 'ru');
+
+// Host-Defaults (z.B. Mandanten-Glossar) greifen, wenn der Aufrufer nichts übergibt
+$service = new TranslationService($provider, defaultOptions: new TranslateOptions(glossary: $mandantenGlossar));
+
+// Fallback-Kette: self-hosted zuerst, Cloud als Reserve
+$provider = new CompositeProvider(new LibreTranslateProvider($url), new DeepLProvider($key));
+```
+
+Der DeepL-Glossar-Sync läuft nur bei geänderten Einträgen (Fingerprint im
+`GlossaryIdStoreInterface` — persistente Stores vermeiden so auch über
+Prozessgrenzen unnötige Requests und Glossar-Neuanlagen).
 
 `TranslationService::needsTranslation()` bildet die v1-Heuristik ab
 (nicht-lateinische Zeichen und Mindestlänge), `cacheHash()` den

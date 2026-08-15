@@ -41,7 +41,7 @@ final class LibreTranslateProviderTest extends TestCase {
 
     public function test_translate_sends_payload_and_parses_response(): void {
         $provider = $this->createProvider([
-            $this->jsonResponse(['translatedText' => 'Hallo Welt', 'detectedLanguage' => ['language' => 'RU', 'confidence' => 90]]),
+            $this->jsonResponse(['translatedText' => ['Hallo Welt'], 'detectedLanguage' => [['language' => 'RU', 'confidence' => 90]]]),
         ]);
 
         $result = $provider->translate('Привет мир', 'de');
@@ -51,7 +51,7 @@ final class LibreTranslateProviderTest extends TestCase {
         $this->assertSame('/translate', $request->getUri()->getPath());
 
         $body = $this->bodyAt(0);
-        $this->assertSame('Привет мир', $body['q']);
+        $this->assertSame(['Привет мир'], $body['q']);
         $this->assertSame('auto', $body['source']);
         $this->assertSame('de', $body['target']);
         $this->assertSame('text', $body['format']);
@@ -65,7 +65,7 @@ final class LibreTranslateProviderTest extends TestCase {
 
     public function test_api_key_and_source_and_html_reach_payload(): void {
         $provider = $this->createProvider([
-            $this->jsonResponse(['translatedText' => '<p>Hallo</p>']),
+            $this->jsonResponse(['translatedText' => ['<p>Hallo</p>']]),
         ], apiKey: 'secret');
 
         $provider->translate('<p>Hello</p>', 'de', 'en', new TranslateOptions(format: TextFormat::Html));
@@ -78,7 +78,7 @@ final class LibreTranslateProviderTest extends TestCase {
 
     public function test_glossary_terms_are_masked_and_restored(): void {
         $provider = $this->createProvider([
-            $this->jsonResponse(['translatedText' => 'Das XLTTERM0X ist fällig']),
+            $this->jsonResponse(['translatedText' => ['Das XLTTERM0X ist fällig']]),
         ]);
 
         $result = $provider->translate('The invoice date is due', 'de', 'en', new TranslateOptions(
@@ -86,7 +86,7 @@ final class LibreTranslateProviderTest extends TestCase {
         ));
 
         // Der Begriff geht maskiert raus …
-        $this->assertSame('The XLTTERM0X is due', $this->bodyAt(0)['q']);
+        $this->assertSame(['The XLTTERM0X is due'], $this->bodyAt(0)['q']);
         // … und kommt als feste Zielübersetzung zurück.
         $this->assertSame('Das Belegdatum ist fällig', $result->text);
         $this->assertTrue($result->deterministicTerminology);
@@ -94,14 +94,14 @@ final class LibreTranslateProviderTest extends TestCase {
 
     public function test_glossary_term_not_present_in_text_is_not_forced(): void {
         $provider = $this->createProvider([
-            $this->jsonResponse(['translatedText' => 'Etwas anderes']),
+            $this->jsonResponse(['translatedText' => ['Etwas anderes']]),
         ]);
 
         $result = $provider->translate('Something else', 'de', 'en', new TranslateOptions(
             glossary: [new GlossaryEntry('invoice date', 'Belegdatum')]
         ));
 
-        $this->assertSame('Something else', $this->bodyAt(0)['q']);
+        $this->assertSame(['Something else'], $this->bodyAt(0)['q']);
         $this->assertSame('Etwas anderes', $result->text);
         $this->assertFalse($result->deterministicTerminology);
     }
@@ -110,7 +110,7 @@ final class LibreTranslateProviderTest extends TestCase {
         $provider = $this->createProvider([$this->jsonResponse(['error' => 'nope'])]);
 
         $this->expectException(TranslationException::class);
-        $this->expectExceptionMessage('translatedText fehlt');
+        $this->expectExceptionMessage('translatedText passt nicht zur Anfrage');
         $provider->translate('Text', 'de');
     }
 
@@ -127,7 +127,7 @@ final class LibreTranslateProviderTest extends TestCase {
     public function test_server_error_is_retried_before_failing(): void {
         $provider = $this->createProvider([
             new Response(503),
-            $this->jsonResponse(['translatedText' => 'Hallo Welt']),
+            $this->jsonResponse(['translatedText' => ['Hallo Welt']]),
         ]);
         $provider->setBaseRetryDelay(0);
 
@@ -159,5 +159,17 @@ final class LibreTranslateProviderTest extends TestCase {
         $provider->preflight();
 
         $this->assertSame('/languages', $this->requestAt(0)->getUri()->getPath());
+    }
+    public function test_translate_batch_sends_all_texts_in_one_request(): void {
+        $provider = $this->createProvider([
+            $this->jsonResponse(['translatedText' => ['Hallo', 'Welt']]),
+        ]);
+
+        $results = $provider->translateBatch(['Hello', 'World'], 'de', 'en');
+
+        $this->assertCount(1, $this->history, 'Beide Texte müssen in einem Request laufen');
+        $this->assertSame(['Hello', 'World'], $this->bodyAt(0)['q']);
+        $this->assertSame('Hallo', $results[0]->text);
+        $this->assertSame('Welt', $results[1]->text);
     }
 }

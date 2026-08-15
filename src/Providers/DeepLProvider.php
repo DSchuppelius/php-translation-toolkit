@@ -46,6 +46,9 @@ class DeepLProvider extends AbstractHttpTranslationProvider {
     /** DeepL-Kontingent erschöpft (nicht-standardisierter Statuscode) */
     private const HTTP_QUOTA_EXCEEDED = 456;
 
+    /** Maximale Textanzahl pro /v2/translate-Request laut DeepL-API */
+    private const MAX_BATCH_SIZE = 50;
+
     /** @var list<string> DeepL-Zielsprachen (ISO 639-1, Stand 2026) */
     private const TARGET_LANGUAGES = [
         'ar', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'et', 'fi', 'fr', 'he',
@@ -108,47 +111,74 @@ class DeepLProvider extends AbstractHttpTranslationProvider {
         ?string $sourceLang = null,
         ?TranslateOptions $options = null,
     ): TranslationResult {
+        return $this->translateBatch([$text], $targetLang, $sourceLang, $options)[0];
+    }
+
+    public function translateBatch(
+        array $texts,
+        string $targetLang,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): array {
         $this->assertAvailable();
+        $this->assertSupportedTargetLanguage($targetLang, self::TARGET_LANGUAGES);
+
+        if ($texts === []) {
+            return [];
+        }
 
         $options ??= new TranslateOptions;
         $glossaryId = $this->syncGlossary($sourceLang, $targetLang, $options);
 
-        $payload = [
-            'text' => [$text],
-            'target_lang' => strtoupper($targetLang),
-        ];
-        if ($sourceLang !== null && $sourceLang !== '') {
-            $payload['source_lang'] = strtoupper($sourceLang);
-        }
-        if ($options->format === TextFormat::Html) {
-            $payload['tag_handling'] = 'html';
-        }
-        if ($options->formality !== Formality::Default) {
-            $payload['formality'] = 'prefer_' . $options->formality->value;
-        }
-        if ($glossaryId !== null) {
-            $payload['glossary_id'] = $glossaryId;
+        $results = [];
+        foreach (array_chunk($texts, self::MAX_BATCH_SIZE) as $chunk) {
+
+            $payload = [
+                'text' => $chunk,
+                'target_lang' => strtoupper($targetLang),
+            ];
+            if ($sourceLang !== null && $sourceLang !== '') {
+                $payload['source_lang'] = strtoupper($sourceLang);
+            }
+            if ($options->format === TextFormat::Html) {
+                $payload['tag_handling'] = 'html';
+            }
+            if ($options->formality !== Formality::Default) {
+                $payload['formality'] = 'prefer_' . $options->formality->value;
+            }
+            if ($glossaryId !== null) {
+                $payload['glossary_id'] = $glossaryId;
+            }
+
+            $data = $this->decodeJsonResponse($this->send('POST', '/v2/translate', ['json' => $payload]));
+
+            $translations = $data['translations'] ?? null;
+            if (!is_array($translations) || count($translations) !== count($chunk)) {
+                throw new TranslationException('Unerwartete DeepL-Antwort: Anzahl der Übersetzungen passt nicht zur Anfrage');
+            }
+
+            foreach ($chunk as $i => $text) {
+                $translation = $translations[$i] ?? null;
+                if (!is_array($translation) || !isset($translation['text']) || !is_string($translation['text'])) {
+                    throw new TranslationException('Unerwartete DeepL-Antwort: translations[' . $i . '].text fehlt');
+                }
+
+                $detected = $translation['detected_source_language'] ?? null;
+
+                $results[] = new TranslationResult(
+                    text: $translation['text'],
+                    sourceText: $text,
+                    targetLang: strtolower($targetLang),
+                    detectedSourceLang: is_string($detected) && $detected !== '' ? strtolower($detected) : null,
+                    provider: self::NAME,
+                    charCount: mb_strlen($text),
+                    fromCache: false,
+                    deterministicTerminology: $glossaryId !== null,
+                );
+            }
         }
 
-        $data = $this->decodeJsonResponse($this->send('POST', '/v2/translate', ['json' => $payload]));
-
-        $translation = $data['translations'][0] ?? null;
-        if (!is_array($translation) || !isset($translation['text']) || !is_string($translation['text'])) {
-            throw new TranslationException('Unerwartete DeepL-Antwort: translations[0].text fehlt');
-        }
-
-        $detected = $translation['detected_source_language'] ?? null;
-
-        return new TranslationResult(
-            text: $translation['text'],
-            sourceText: $text,
-            targetLang: strtolower($targetLang),
-            detectedSourceLang: is_string($detected) && $detected !== '' ? strtolower($detected) : null,
-            provider: self::NAME,
-            charCount: mb_strlen($text),
-            fromCache: false,
-            deterministicTerminology: $glossaryId !== null,
-        );
+        return $results;
     }
 
     /**
@@ -180,17 +210,28 @@ class DeepLProvider extends AbstractHttpTranslationProvider {
             return null;
         }
 
+        $tsv = self::toTsv($entries);
+        $fingerprint = hash('sha256', strtoupper($sourceLang) . '|' . strtoupper($targetLang) . '|' . $tsv);
+
+        // Unverändertes Glossar → kein Remote-Sync nötig (spart pro
+        // Übersetzung einen PUT; der Fingerprint überlebt in persistenten
+        // Stores auch Prozessgrenzen)
+        $glossaryId = $this->glossaryIdStore->get();
+        if ($glossaryId !== null && $glossaryId !== '' && $this->glossaryIdStore->getSyncedFingerprint() === $fingerprint) {
+            return $glossaryId;
+        }
+
         $dictionary = [
             'source_lang' => strtoupper($sourceLang),
             'target_lang' => strtoupper($targetLang),
-            'entries' => self::toTsv($entries),
+            'entries' => $tsv,
             'entries_format' => 'tsv',
         ];
 
-        $glossaryId = $this->glossaryIdStore->get();
         if ($glossaryId !== null && $glossaryId !== '') {
             try {
                 $this->send('PUT', '/v3/glossaries/' . rawurlencode($glossaryId) . '/dictionaries', ['json' => $dictionary]);
+                $this->glossaryIdStore->setSyncedFingerprint($fingerprint);
 
                 return $glossaryId;
             } catch (TranslationException) {
@@ -208,6 +249,7 @@ class DeepLProvider extends AbstractHttpTranslationProvider {
         }
 
         $this->glossaryIdStore->set($glossaryId);
+        $this->glossaryIdStore->setSyncedFingerprint($fingerprint);
 
         return $glossaryId;
     }

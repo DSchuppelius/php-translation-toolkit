@@ -161,4 +161,21 @@ final class AzureTranslatorProviderTest extends TestCase {
         $this->assertCount(1, $this->history, 'Sprachliste darf nur einmal geholt werden');
         $this->assertSame('/languages', $this->requestAt(0)->getUri()->getPath());
     }
+    public function test_translate_batch_bundles_texts_in_one_request(): void {
+        $provider = $this->createProvider([
+            $this->jsonResponse([
+                ['translations' => [['text' => 'Hallo']]],
+                ['translations' => [['text' => 'Welt']]],
+            ]),
+        ]);
+
+        $results = $provider->translateBatch(['Hello', 'World'], 'de', 'en');
+
+        $this->assertCount(1, $this->history, 'Beide Texte müssen in einem Request laufen');
+        $body = $this->bodyAt(0);
+        $this->assertSame('Hello', $body[0]['Text']);
+        $this->assertSame('World', $body[1]['Text']);
+        $this->assertSame('Hallo', $results[0]->text);
+        $this->assertSame('Welt', $results[1]->text);
+    }
 }

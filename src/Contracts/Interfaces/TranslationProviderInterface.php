@@ -46,6 +46,21 @@ interface TranslationProviderInterface {
     ): TranslationResult;
 
     /**
+     * Übersetzt mehrere Texte in möglichst wenigen API-Aufrufen (Provider
+     * bündeln nach ihren Limits, z.B. DeepL 50, Azure 100 Texte je Request).
+     *
+     * @param list<string> $texts
+     * @return list<TranslationResult> Ergebnisse in Eingabereihenfolge
+     * @throws TranslationException bei Konfigurations-, Transport- oder API-Fehlern
+     */
+    public function translateBatch(
+        array $texts,
+        string $targetLang,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): array;
+
+    /**
      * Erzwingt der Provider Glossarbegriffe deterministisch (natives Glossar,
      * Dictionary-Markup, Token-Maskierung) oder gar nicht? Das Ergebnis führt
      * die tatsächliche Wirkung je Aufruf

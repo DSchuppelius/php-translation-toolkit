@@ -24,4 +24,13 @@ interface GlossaryIdStoreInterface {
     public function get(): ?string;
 
     public function set(string $glossaryId): void;
+
+    /**
+     * Fingerprint des zuletzt synchronisierten Glossar-Inhalts (Sprachpaar +
+     * Einträge). Erlaubt Providern, den Remote-Sync zu überspringen, solange
+     * sich nichts geändert hat.
+     */
+    public function getSyncedFingerprint(): ?string;
+
+    public function setSyncedFingerprint(string $fingerprint): void;
 }

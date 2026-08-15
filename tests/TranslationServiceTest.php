@@ -21,6 +21,7 @@ use TranslationToolkit\TranslationService;
 
 final class TranslationServiceTest extends TestCase {
     private int $providerCalls = 0;
+    private int $batchCalls = 0;
 
     private function createProvider(string $translated = 'Hallo Welt'): TranslationProviderInterface {
         $test = $this;
@@ -62,6 +63,20 @@ final class TranslationServiceTest extends TestCase {
                 );
             }
 
+            public function translateBatch(
+                array $texts,
+                string $targetLang,
+                ?string $sourceLang = null,
+                ?TranslateOptions $options = null,
+            ): array {
+                $this->test->countBatchCall();
+
+                return array_map(
+                    fn (string $text): TranslationResult => $this->translate($text, $targetLang, $sourceLang, $options),
+                    $texts
+                );
+            }
+
             public function getSupportedTargetLanguages(): array {
                 return ['de', 'en'];
             }
@@ -70,6 +85,10 @@ final class TranslationServiceTest extends TestCase {
 
     public function countProviderCall(): void {
         $this->providerCalls++;
+    }
+
+    public function countBatchCall(): void {
+        $this->batchCalls++;
     }
 
     public function test_translate_uses_provider_and_fills_cache(): void {
@@ -201,5 +220,51 @@ final class TranslationServiceTest extends TestCase {
         ));
 
         $this->assertCount(4, array_unique([$plain, $html, $formal, $glossary]));
+    }
+    public function test_translate_many_mixes_cache_hits_and_batch(): void {
+        $cache = new ArrayTranslationCache;
+        $service = new TranslationService($this->createProvider(), $cache);
+
+        // Ersten Text vorwärmen → beim Batch-Lauf ein Cache-Hit, ein Miss
+        $service->translate('Привет мир, как дела?');
+        $results = $service->translateMany(['Привет мир, как дела?', 'Дополнительный текст', '  ']);
+
+        $this->assertCount(3, $results);
+        $this->assertTrue($results[0]->fromCache);
+        $this->assertFalse($results[1]->fromCache);
+        $this->assertSame('  ', $results[2]->text, 'Leertext bleibt unverändert');
+        $this->assertSame(1, $this->batchCalls, 'Nur die Misses gehen als EIN Batch an den Provider');
+        $this->assertSame(2, $cache->count());
+    }
+
+    public function test_translate_many_preserves_input_order(): void {
+        $service = new TranslationService($this->createProvider(), new ArrayTranslationCache);
+
+        $results = $service->translateMany(['Первый текст очень длинный', 'Второй текст очень длинный']);
+
+        $this->assertSame('Первый текст очень длинный', $results[0]->sourceText);
+        $this->assertSame('Второй текст очень длинный', $results[1]->sourceText);
+    }
+
+    public function test_default_options_apply_when_caller_passes_none(): void {
+        $service = new TranslationService(
+            $this->createProvider(),
+            defaultOptions: new TranslateOptions(glossary: [new GlossaryEntry('мир', 'Welt')]),
+        );
+
+        $result = $service->translate('Привет мир, как дела?', 'de', 'ru');
+
+        $this->assertTrue($result->deterministicTerminology, 'Default-Optionen (Mandanten-Glossar) müssen greifen');
+    }
+
+    public function test_explicit_options_override_default_options(): void {
+        $service = new TranslationService(
+            $this->createProvider(),
+            defaultOptions: new TranslateOptions(glossary: [new GlossaryEntry('мир', 'Welt')]),
+        );
+
+        $result = $service->translate('Привет мир, как дела?', 'de', 'ru', new TranslateOptions);
+
+        $this->assertFalse($result->deterministicTerminology, 'Explizite Optionen müssen die Defaults ersetzen');
     }
 }

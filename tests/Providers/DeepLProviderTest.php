@@ -216,7 +216,7 @@ final class DeepLProviderTest extends TestCase {
         ]);
 
         $this->expectException(TranslationException::class);
-        $this->expectExceptionMessage('translations[0].text fehlt');
+        $this->expectExceptionMessage('Anzahl der Übersetzungen passt nicht zur Anfrage');
         $provider->translate('Text', 'de');
     }
 
@@ -258,5 +258,84 @@ final class DeepLProviderTest extends TestCase {
         $provider->preflight();
 
         $this->assertSame('/v2/usage', $this->requestAt(0)->getUri()->getPath());
+    }
+    public function test_translate_batch_bundles_texts_in_one_request(): void {
+        $provider = $this->createProvider([
+            $this->jsonResponse(['translations' => [['text' => 'Hallo'], ['text' => 'Welt']]]),
+        ]);
+
+        $results = $provider->translateBatch(['Hello', 'World'], 'de');
+
+        $this->assertCount(1, $this->history, 'Beide Texte müssen in einem Request laufen');
+        $this->assertSame(['Hello', 'World'], $this->bodyAt(0)['text']);
+        $this->assertSame('Hallo', $results[0]->text);
+        $this->assertSame('Welt', $results[1]->text);
+        $this->assertSame('Hello', $results[0]->sourceText);
+    }
+
+    public function test_translate_batch_chunks_above_api_limit(): void {
+        $texts = array_map(static fn (int $i): string => "Text {$i}", range(1, 51));
+        $firstChunk = array_map(static fn (int $i): array => ['text' => "Übersetzt {$i}"], range(1, 50));
+        $provider = $this->createProvider([
+            $this->jsonResponse(['translations' => $firstChunk]),
+            $this->jsonResponse(['translations' => [['text' => 'Übersetzt 51']]]),
+        ]);
+
+        $results = $provider->translateBatch($texts, 'de');
+
+        $this->assertCount(2, $this->history, '51 Texte müssen auf zwei Requests verteilt werden');
+        $this->assertCount(50, $this->bodyAt(0)['text']);
+        $this->assertCount(1, $this->bodyAt(1)['text']);
+        $this->assertCount(51, $results);
+        $this->assertSame('Übersetzt 51', $results[50]->text);
+    }
+
+    public function test_unchanged_glossary_is_synced_only_once(): void {
+        $store = new InMemoryGlossaryIdStore;
+        $provider = $this->createProvider([
+            $this->jsonResponse(['glossary_id' => 'gl-1']),
+            $this->jsonResponse(['translations' => [['text' => 'Belegdatum']]]),
+            $this->jsonResponse(['translations' => [['text' => 'Belegdatum']]]),
+        ], store: $store);
+
+        $options = new TranslateOptions(glossary: [new GlossaryEntry('invoice date', 'Belegdatum')]);
+        $provider->translate('invoice date', 'de', 'en', $options);
+        $provider->translate('invoice date is due', 'de', 'en', $options);
+
+        // Anlage + 2× Übersetzung — KEIN zweiter Glossar-Sync
+        $this->assertCount(3, $this->history);
+        $this->assertSame('/v3/glossaries', $this->requestAt(0)->getUri()->getPath());
+        $this->assertSame('/v2/translate', $this->requestAt(1)->getUri()->getPath());
+        $this->assertSame('/v2/translate', $this->requestAt(2)->getUri()->getPath());
+    }
+
+    public function test_changed_glossary_triggers_resync(): void {
+        $store = new InMemoryGlossaryIdStore;
+        $provider = $this->createProvider([
+            $this->jsonResponse(['glossary_id' => 'gl-1']),
+            $this->jsonResponse(['translations' => [['text' => 'Belegdatum']]]),
+            $this->jsonResponse([]),
+            $this->jsonResponse(['translations' => [['text' => 'Rechnungsdatum']]]),
+        ], store: $store);
+
+        $provider->translate('invoice date', 'de', 'en', new TranslateOptions(
+            glossary: [new GlossaryEntry('invoice date', 'Belegdatum')]
+        ));
+        $provider->translate('invoice date', 'de', 'en', new TranslateOptions(
+            glossary: [new GlossaryEntry('invoice date', 'Rechnungsdatum')]
+        ));
+
+        // Geänderte Einträge → PUT auf das bestehende Glossar vor der zweiten Übersetzung
+        $this->assertCount(4, $this->history);
+        $this->assertSame('PUT', $this->requestAt(2)->getMethod());
+        $this->assertSame('/v3/glossaries/gl-1/dictionaries', $this->requestAt(2)->getUri()->getPath());
+    }
+
+    public function test_unsupported_target_language_fails_without_request(): void {
+        $provider = $this->createProvider([]);
+
+        $this->expectException(TranslationException::class);
+        $this->expectExceptionMessage('Zielsprache "xx"');
+        $provider->translate('Text', 'xx');
     }
 }

@@ -75,12 +75,32 @@ class LibreTranslateProvider extends AbstractHttpTranslationProvider {
         ?string $sourceLang = null,
         ?TranslateOptions $options = null,
     ): TranslationResult {
-        $options ??= new TranslateOptions;
+        return $this->translateBatch([$text], $targetLang, $sourceLang, $options)[0];
+    }
 
-        [$masked, $tokens] = self::maskTerms($text, $options->glossaryEntries());
+    public function translateBatch(
+        array $texts,
+        string $targetLang,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): array {
+        if ($texts === []) {
+            return [];
+        }
+
+        $options ??= new TranslateOptions;
+        $entries = $options->glossaryEntries();
+
+        // Pro Text maskieren — nur getroffene Begriffe landen in der
+        // jeweiligen Rückersetzungs-Tabelle
+        $maskedTexts = [];
+        $tokenTables = [];
+        foreach ($texts as $i => $text) {
+            [$maskedTexts[$i], $tokenTables[$i]] = self::maskTerms($text, $entries);
+        }
 
         $payload = [
-            'q' => $masked,
+            'q' => $maskedTexts,
             'source' => $sourceLang !== null && $sourceLang !== '' ? strtolower($sourceLang) : 'auto',
             'target' => strtolower($targetLang),
             'format' => $options->format === TextFormat::Html ? 'html' : 'text',
@@ -91,24 +111,37 @@ class LibreTranslateProvider extends AbstractHttpTranslationProvider {
 
         $data = $this->decodeJsonResponse($this->send('POST', '/translate', ['json' => $payload]));
 
-        $translated = $data['translatedText'] ?? null;
-        if (!is_string($translated)) {
-            throw new TranslationException('Unerwartete LibreTranslate-Antwort: translatedText fehlt');
+        // Bei Array-q liefert LibreTranslate translatedText/detectedLanguage als Arrays
+        $translatedTexts = $data['translatedText'] ?? null;
+        if (!is_array($translatedTexts) || count($translatedTexts) !== count($texts)) {
+            throw new TranslationException('Unerwartete LibreTranslate-Antwort: translatedText passt nicht zur Anfrage');
         }
 
-        $translated = strtr($translated, $tokens);
-        $detected = $data['detectedLanguage']['language'] ?? null;
+        $detectedLanguages = $data['detectedLanguage'] ?? [];
 
-        return new TranslationResult(
-            text: $translated,
-            sourceText: $text,
-            targetLang: strtolower($targetLang),
-            detectedSourceLang: is_string($detected) && $detected !== '' ? strtolower($detected) : null,
-            provider: self::NAME,
-            charCount: mb_strlen($text),
-            fromCache: false,
-            deterministicTerminology: $tokens !== [],
-        );
+        $results = [];
+        foreach ($texts as $i => $text) {
+            $translated = $translatedTexts[$i] ?? null;
+            if (!is_string($translated)) {
+                throw new TranslationException('Unerwartete LibreTranslate-Antwort: translatedText[' . $i . '] fehlt');
+            }
+
+            $tokens = $tokenTables[$i];
+            $detected = is_array($detectedLanguages) ? ($detectedLanguages[$i]['language'] ?? null) : null;
+
+            $results[] = new TranslationResult(
+                text: strtr($translated, $tokens),
+                sourceText: $text,
+                targetLang: strtolower($targetLang),
+                detectedSourceLang: is_string($detected) && $detected !== '' ? strtolower($detected) : null,
+                provider: self::NAME,
+                charCount: mb_strlen($text),
+                fromCache: false,
+                deterministicTerminology: $tokens !== [],
+            );
+        }
+
+        return $results;
     }
 
     /**

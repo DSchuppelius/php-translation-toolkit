@@ -35,6 +35,9 @@ class AzureTranslatorProvider extends AbstractHttpTranslationProvider {
     private const API_VERSION = '3.0';
     private const DEFAULT_BASE_URL = 'https://api.cognitive.microsofttranslator.com';
 
+    /** Maximale Textanzahl pro /translate-Request laut Azure-API */
+    private const MAX_BATCH_SIZE = 100;
+
     /** @var list<string>|null Lazy von /languages geholt */
     private ?array $targetLanguages = null;
 
@@ -85,40 +88,65 @@ class AzureTranslatorProvider extends AbstractHttpTranslationProvider {
         ?string $sourceLang = null,
         ?TranslateOptions $options = null,
     ): TranslationResult {
+        return $this->translateBatch([$text], $targetLang, $sourceLang, $options)[0];
+    }
+
+    public function translateBatch(
+        array $texts,
+        string $targetLang,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): array {
         $this->assertAvailable();
+
+        if ($texts === []) {
+            return [];
+        }
 
         $options ??= new TranslateOptions;
         $entries = $options->glossaryEntries();
+        $path = $this->translatePath($targetLang, $sourceLang, $options->format === TextFormat::Html || $entries !== []);
 
-        $response = $this->send(
-            'POST',
-            $this->translatePath($targetLang, $sourceLang, $options->format === TextFormat::Html || $entries !== []),
-            ['json' => [['Text' => self::applyDynamicDictionary($text, $entries)]]]
-        );
+        $results = [];
+        foreach (array_chunk($texts, self::MAX_BATCH_SIZE) as $chunk) {
 
-        $data = $this->decodeJsonResponse($response);
-        $first = $data[0] ?? null;
-        if (!is_array($first)) {
-            throw new TranslationException('Unerwartete Azure-Antwort: leeres Ergebnis-Array');
+            $body = array_map(
+                static fn (string $text): array => ['Text' => self::applyDynamicDictionary($text, $entries)],
+                $chunk
+            );
+
+            $data = $this->decodeJsonResponse($this->send('POST', $path, ['json' => $body]));
+            if (count($data) !== count($chunk)) {
+                throw new TranslationException('Unerwartete Azure-Antwort: Anzahl der Übersetzungen passt nicht zur Anfrage');
+            }
+
+            foreach ($chunk as $i => $text) {
+                $element = $data[$i] ?? null;
+                if (!is_array($element)) {
+                    throw new TranslationException('Unerwartete Azure-Antwort: leeres Ergebnis-Element');
+                }
+
+                $translated = $element['translations'][0]['text'] ?? null;
+                if (!is_string($translated)) {
+                    throw new TranslationException('Unerwartete Azure-Antwort: translations[0].text fehlt');
+                }
+
+                $detected = $element['detectedLanguage']['language'] ?? null;
+
+                $results[] = new TranslationResult(
+                    text: $translated,
+                    sourceText: $text,
+                    targetLang: strtolower($targetLang),
+                    detectedSourceLang: is_string($detected) && $detected !== '' ? strtolower($detected) : null,
+                    provider: self::NAME,
+                    charCount: mb_strlen($text),
+                    fromCache: false,
+                    deterministicTerminology: $entries !== [],
+                );
+            }
         }
 
-        $translated = $first['translations'][0]['text'] ?? null;
-        if (!is_string($translated)) {
-            throw new TranslationException('Unerwartete Azure-Antwort: translations[0].text fehlt');
-        }
-
-        $detected = $first['detectedLanguage']['language'] ?? null;
-
-        return new TranslationResult(
-            text: $translated,
-            sourceText: $text,
-            targetLang: strtolower($targetLang),
-            detectedSourceLang: is_string($detected) && $detected !== '' ? strtolower($detected) : null,
-            provider: self::NAME,
-            charCount: mb_strlen($text),
-            fromCache: false,
-            deterministicTerminology: $entries !== [],
-        );
+        return $results;
     }
 
     /**
