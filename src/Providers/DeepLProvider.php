@@ -13,15 +13,14 @@ declare(strict_types=1);
 namespace TranslationToolkit\Providers;
 
 use APIToolkit\API\Authentication\ApiKeyAuthentication;
-use APIToolkit\Contracts\Abstracts\API\ClientAbstract;
-use APIToolkit\Exceptions\{ApiException, ForbiddenException, TooManyRequestsException};
+use APIToolkit\Exceptions\ApiException;
 use GuzzleHttp\Client as HttpClient;
-use Psr\Http\Message\ResponseInterface;
 use Psr\Log\LoggerInterface;
-use Throwable;
-use TranslationToolkit\Contracts\Interfaces\TranslationProviderInterface;
-use TranslationToolkit\Entities\TranslationResult;
+use TranslationToolkit\Contracts\Interfaces\GlossaryIdStoreInterface;
+use TranslationToolkit\Entities\{GlossaryEntry, TranslateOptions, TranslationResult};
+use TranslationToolkit\Enums\{Formality, TextFormat};
 use TranslationToolkit\Exceptions\TranslationException;
+use TranslationToolkit\Stores\InMemoryGlossaryIdStore;
 
 /**
  * DeepL-Provider auf Basis der REST-API v2, gebaut auf dem api-toolkit
@@ -30,8 +29,15 @@ use TranslationToolkit\Exceptions\TranslationException;
  * Free-Keys (Suffix ":fx") werden automatisch gegen api-free.deepl.com
  * aufgelöst, alle anderen gegen api.deepl.com. Für Tests kann ein
  * vorbereiteter Guzzle-Client (MockHandler) injiziert werden.
+ *
+ * Terminologie wird über multilinguale v3-Glossare deterministisch erzwungen:
+ * ein Glossar je Store, dessen Dictionary je Sprachpaar bei jedem Aufruf
+ * idempotent voll ersetzt wird (damit wirken auch Löschungen sofort). DeepL
+ * verlangt dafür eine **explizite Quellsprache** — ohne `sourceLang` bleibt
+ * das Glossar ungenutzt und das Ergebnis meldet
+ * `deterministicTerminology === false`.
  */
-class DeepLProvider extends ClientAbstract implements TranslationProviderInterface {
+class DeepLProvider extends AbstractHttpTranslationProvider {
     public const NAME = 'deepl';
 
     private const API_URL_PRO = 'https://api.deepl.com';
@@ -47,12 +53,16 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
         'ru', 'sk', 'sl', 'sv', 'th', 'tr', 'uk', 'vi', 'zh',
     ];
 
+    private readonly GlossaryIdStoreInterface $glossaryIdStore;
+
     public function __construct(
         #[\SensitiveParameter]
         private readonly string $apiKey,
         ?string $baseUrl = null,
         ?LoggerInterface $logger = null,
         ?HttpClient $httpClient = null,
+        ?GlossaryIdStoreInterface $glossaryIdStore = null,
+        private readonly string $glossaryName = 'translation-toolkit',
     ) {
         parent::__construct(
             $baseUrl ?? (str_ends_with($apiKey, ':fx') ? self::API_URL_FREE : self::API_URL_PRO),
@@ -61,9 +71,15 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
             $httpClient
         );
 
+        $this->glossaryIdStore = $glossaryIdStore ?? new InMemoryGlossaryIdStore;
+
         if ($this->isAvailable()) {
             $this->setAuthentication(new ApiKeyAuthentication('DeepL-Auth-Key ' . $apiKey, 'Authorization'));
         }
+    }
+
+    protected function providerLabel(): string {
+        return 'DeepL';
     }
 
     public function getName(): string {
@@ -74,14 +90,28 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
         return trim($this->apiKey) !== '';
     }
 
+    public function supportsGlossary(): bool {
+        return true;
+    }
+
     public function getSupportedTargetLanguages(): array {
         return self::TARGET_LANGUAGES;
     }
 
-    public function translate(string $text, string $targetLang, ?string $sourceLang = null): TranslationResult {
-        if (!$this->isAvailable()) {
-            throw new TranslationException('DeepL-API-Key ist nicht konfiguriert');
-        }
+    public function preflight(): void {
+        $this->getUsage();
+    }
+
+    public function translate(
+        string $text,
+        string $targetLang,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): TranslationResult {
+        $this->assertAvailable();
+
+        $options ??= new TranslateOptions;
+        $glossaryId = $this->syncGlossary($sourceLang, $targetLang, $options);
 
         $payload = [
             'text' => [$text],
@@ -90,9 +120,17 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
         if ($sourceLang !== null && $sourceLang !== '') {
             $payload['source_lang'] = strtoupper($sourceLang);
         }
+        if ($options->format === TextFormat::Html) {
+            $payload['tag_handling'] = 'html';
+        }
+        if ($options->formality !== Formality::Default) {
+            $payload['formality'] = 'prefer_' . $options->formality->value;
+        }
+        if ($glossaryId !== null) {
+            $payload['glossary_id'] = $glossaryId;
+        }
 
-        $response = $this->send('POST', '/v2/translate', ['json' => $payload]);
-        $data = self::decodeJson($response);
+        $data = $this->decodeJsonResponse($this->send('POST', '/v2/translate', ['json' => $payload]));
 
         $translation = $data['translations'][0] ?? null;
         if (!is_array($translation) || !isset($translation['text']) || !is_string($translation['text'])) {
@@ -109,6 +147,7 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
             provider: self::NAME,
             charCount: mb_strlen($text),
             fromCache: false,
+            deterministicTerminology: $glossaryId !== null,
         );
     }
 
@@ -118,12 +157,9 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
      * @return array{characterCount: int, characterLimit: int}
      */
     public function getUsage(): array {
-        if (!$this->isAvailable()) {
-            throw new TranslationException('DeepL-API-Key ist nicht konfiguriert');
-        }
+        $this->assertAvailable();
 
-        $response = $this->send('GET', '/v2/usage');
-        $data = self::decodeJson($response);
+        $data = $this->decodeJsonResponse($this->send('GET', '/v2/usage'));
 
         return [
             'characterCount' => (int) ($data['character_count'] ?? 0),
@@ -132,43 +168,78 @@ class DeepLProvider extends ClientAbstract implements TranslationProviderInterfa
     }
 
     /**
-     * Führt den Request über den Retry-Pfad des api-toolkit aus und übersetzt
-     * dessen typisierte Exceptions in die TranslationException des Ports.
+     * Idempotenter Glossar-Sync (v3, multilingual): das Dictionary des
+     * Sprachpaars wird voll ersetzt; ist das gemerkte Glossar remote
+     * verschwunden, wird ein neues angelegt und die ID im Store abgelegt.
      *
-     * @param array<string, mixed> $options
+     * @return string|null Glossar-ID oder null, wenn kein Glossar greift
      */
-    private function send(string $method, string $path, array $options = []): ResponseInterface {
-        try {
-            return $this->requestWithRetry($method, $path, $options);
-        } catch (ForbiddenException $e) {
-            throw new TranslationException('DeepL-Authentifizierung fehlgeschlagen (HTTP 403) — API-Key prüfen', 403, $e);
-        } catch (TooManyRequestsException $e) {
-            throw new TranslationException('DeepL-Rate-Limit erreicht (HTTP 429)', 429, $e);
-        } catch (ApiException $e) {
-            if ($e->getCode() === self::HTTP_QUOTA_EXCEEDED) {
-                throw new TranslationException('DeepL-Zeichenkontingent erschöpft (HTTP 456)', self::HTTP_QUOTA_EXCEEDED, $e);
-            }
-
-            throw new TranslationException(sprintf('DeepL-Fehler HTTP %d: %s', $e->getCode(), $e->getMessage()), $e->getCode(), $e);
-        } catch (Throwable $e) {
-            throw new TranslationException('DeepL-Anfrage fehlgeschlagen: ' . $e->getMessage(), 0, $e);
+    private function syncGlossary(?string $sourceLang, string $targetLang, TranslateOptions $options): ?string {
+        $entries = $options->glossaryEntries();
+        if ($entries === [] || $sourceLang === null || $sourceLang === '') {
+            return null;
         }
+
+        $dictionary = [
+            'source_lang' => strtoupper($sourceLang),
+            'target_lang' => strtoupper($targetLang),
+            'entries' => self::toTsv($entries),
+            'entries_format' => 'tsv',
+        ];
+
+        $glossaryId = $this->glossaryIdStore->get();
+        if ($glossaryId !== null && $glossaryId !== '') {
+            try {
+                $this->send('PUT', '/v3/glossaries/' . rawurlencode($glossaryId) . '/dictionaries', ['json' => $dictionary]);
+
+                return $glossaryId;
+            } catch (TranslationException) {
+                // Glossar remote verschwunden oder nicht erreichbar → Neuanlage.
+            }
+        }
+
+        $data = $this->decodeJsonResponse($this->send('POST', '/v3/glossaries', [
+            'json' => ['name' => $this->glossaryName, 'dictionaries' => [$dictionary]],
+        ]));
+
+        $glossaryId = $data['glossary_id'] ?? null;
+        if (!is_string($glossaryId) || $glossaryId === '') {
+            throw new TranslationException('Glossar-Anlage ohne glossary_id beantwortet');
+        }
+
+        $this->glossaryIdStore->set($glossaryId);
+
+        return $glossaryId;
     }
 
     /**
-     * @return array<string, mixed>
+     * TSV-Zeilen „Begriff<TAB>Übersetzung"; Tabs/Zeilenumbrüche in den Werten
+     * würden das Format sprengen und werden zu Leerzeichen.
+     *
+     * @param list<GlossaryEntry> $entries
      */
-    private static function decodeJson(ResponseInterface $response): array {
-        try {
-            $decoded = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $e) {
-            throw new TranslationException('DeepL-Antwort ist kein gültiges JSON: ' . $e->getMessage(), 0, $e);
+    private static function toTsv(array $entries): string {
+        return implode("\n", array_map(
+            static fn (GlossaryEntry $e): string => self::flatten($e->term) . "\t" . self::flatten($e->translation),
+            $entries
+        ));
+    }
+
+    private static function flatten(string $value): string {
+        return str_replace(["\t", "\r\n", "\n", "\r"], ' ', $value);
+    }
+
+    private function assertAvailable(): void {
+        if (!$this->isAvailable()) {
+            throw new TranslationException('DeepL-API-Key ist nicht konfiguriert');
+        }
+    }
+
+    protected function translateApiException(ApiException $e): TranslationException {
+        if ($e->getCode() === self::HTTP_QUOTA_EXCEEDED) {
+            return new TranslationException('DeepL-Zeichenkontingent erschöpft (HTTP 456)', self::HTTP_QUOTA_EXCEEDED, $e);
         }
 
-        if (!is_array($decoded)) {
-            throw new TranslationException('DeepL-Antwort hat ein unerwartetes Format');
-        }
-
-        return $decoded;
+        return parent::translateApiException($e);
     }
 }

@@ -15,7 +15,8 @@ namespace Tests;
 use PHPUnit\Framework\TestCase;
 use TranslationToolkit\Caches\ArrayTranslationCache;
 use TranslationToolkit\Contracts\Interfaces\{TranslationProviderInterface, TranslationUsageListenerInterface};
-use TranslationToolkit\Entities\TranslationResult;
+use TranslationToolkit\Entities\{GlossaryEntry, TranslateOptions, TranslationResult};
+use TranslationToolkit\Enums\{Formality, TextFormat};
 use TranslationToolkit\TranslationService;
 
 final class TranslationServiceTest extends TestCase {
@@ -35,7 +36,18 @@ final class TranslationServiceTest extends TestCase {
                 return true;
             }
 
-            public function translate(string $text, string $targetLang, ?string $sourceLang = null): TranslationResult {
+            public function supportsGlossary(): bool {
+                return true;
+            }
+
+            public function preflight(): void {}
+
+            public function translate(
+                string $text,
+                string $targetLang,
+                ?string $sourceLang = null,
+                ?TranslateOptions $options = null,
+            ): TranslationResult {
                 $this->test->countProviderCall();
 
                 return new TranslationResult(
@@ -46,6 +58,7 @@ final class TranslationServiceTest extends TestCase {
                     provider: 'fake',
                     charCount: mb_strlen($text),
                     fromCache: false,
+                    deterministicTerminology: $options !== null && $options->hasGlossary(),
                 );
             }
 
@@ -114,6 +127,44 @@ final class TranslationServiceTest extends TestCase {
         $this->assertTrue($listener->recorded[1]->fromCache);
     }
 
+    public function test_options_are_passed_to_provider(): void {
+        $service = new TranslationService($this->createProvider());
+
+        $result = $service->translate('Привет мир, как дела?', 'de', 'ru', new TranslateOptions(
+            glossary: [new GlossaryEntry('мир', 'Welt')]
+        ));
+
+        $this->assertTrue($result->deterministicTerminology);
+    }
+
+    public function test_differing_options_do_not_share_a_cache_entry(): void {
+        $cache = new ArrayTranslationCache;
+        $service = new TranslationService($this->createProvider(), $cache);
+
+        $service->translate('Привет мир, как дела?', 'de');
+        $service->translate('Привет мир, как дела?', 'de', null, new TranslateOptions(
+            glossary: [new GlossaryEntry('мир', 'Welt')]
+        ));
+
+        $this->assertSame(2, $this->providerCalls, 'Glossar verändert das Ergebnis — kein Cache-Treffer');
+        $this->assertSame(2, $cache->count());
+    }
+
+    public function test_cache_hit_does_not_claim_terminology_enforcement(): void {
+        $cache = new ArrayTranslationCache;
+        $service = new TranslationService($this->createProvider(), $cache);
+        $options = new TranslateOptions(glossary: [new GlossaryEntry('мир', 'Welt')]);
+
+        $service->translate('Привет мир, как дела?', 'de', null, $options);
+        $result = $service->translate('Привет мир, как дела?', 'de', null, $options);
+
+        $this->assertTrue($result->fromCache);
+        $this->assertSame(1, $this->providerCalls);
+        // Der Cache hält nur den Text — ob der Ursprungslauf die Begriffe
+        // wirklich erzwang (z.B. DeepL ohne Quellsprache: nein), weiß er nicht.
+        $this->assertFalse($result->deterministicTerminology);
+    }
+
     public function test_needs_translation_heuristic(): void {
         // Kurzer Text: keine Übersetzung (v1: strlen > 12)
         $this->assertFalse(TranslationService::needsTranslation('Привет'));
@@ -132,5 +183,23 @@ final class TranslationServiceTest extends TestCase {
 
         $this->assertSame($a, $b);
         $this->assertNotSame($a, $c);
+    }
+
+    public function test_default_options_keep_the_legacy_cache_hash(): void {
+        $withoutOptions = TranslationService::cacheHash('Text', null, 'de', 'deepl');
+        $withDefaults = TranslationService::cacheHash('Text', null, 'de', 'deepl', new TranslateOptions);
+
+        $this->assertSame($withoutOptions, $withDefaults, 'Defaults dürfen bestehende Cache-Einträge nicht entwerten');
+    }
+
+    public function test_non_default_options_change_the_cache_hash(): void {
+        $plain = TranslationService::cacheHash('Text', null, 'de', 'deepl');
+        $html = TranslationService::cacheHash('Text', null, 'de', 'deepl', new TranslateOptions(format: TextFormat::Html));
+        $formal = TranslationService::cacheHash('Text', null, 'de', 'deepl', new TranslateOptions(formality: Formality::More));
+        $glossary = TranslationService::cacheHash('Text', null, 'de', 'deepl', new TranslateOptions(
+            glossary: [new GlossaryEntry('a', 'b')]
+        ));
+
+        $this->assertCount(4, array_unique([$plain, $html, $formal, $glossary]));
     }
 }

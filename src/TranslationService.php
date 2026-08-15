@@ -17,7 +17,7 @@ use TranslationToolkit\Contracts\Interfaces\{
     TranslationProviderInterface,
     TranslationUsageListenerInterface
 };
-use TranslationToolkit\Entities\TranslationResult;
+use TranslationToolkit\Entities\{TranslateOptions, TranslationResult};
 
 /**
  * Orchestriert Übersetzungen: Cache prüfen → Provider aufrufen → Cache füllen
@@ -44,11 +44,18 @@ final class TranslationService {
     }
 
     /**
-     * Übersetzt einen Text; identische Texte werden aus dem globalen Cache bedient.
+     * Übersetzt einen Text; identische Texte werden aus dem globalen Cache
+     * bedient. Format, Förmlichkeit und Glossar gehen in den Cache-Schlüssel
+     * ein — sie verändern das Ergebnis.
      *
      * Leere Texte werden ohne Provider-Aufruf unverändert zurückgegeben.
      */
-    public function translate(string $text, ?string $targetLang = null, ?string $sourceLang = null): TranslationResult {
+    public function translate(
+        string $text,
+        ?string $targetLang = null,
+        ?string $sourceLang = null,
+        ?TranslateOptions $options = null,
+    ): TranslationResult {
         $targetLang = strtolower($targetLang ?? $this->defaultTargetLang);
 
         if (trim($text) === '') {
@@ -63,7 +70,7 @@ final class TranslationService {
             );
         }
 
-        $hash = self::cacheHash($text, $sourceLang, $targetLang, $this->provider->getName());
+        $hash = self::cacheHash($text, $sourceLang, $targetLang, $this->provider->getName(), $options);
 
         $cached = $this->cache?->get($hash);
         if ($cached !== null) {
@@ -75,13 +82,19 @@ final class TranslationService {
                 provider: $this->provider->getName(),
                 charCount: mb_strlen($text),
                 fromCache: true,
+                // Bewusst false: in diesem Aufruf wurde nichts erzwungen, und
+                // ob der ursprüngliche Lauf es tat, weiß der Cache nicht (er
+                // hält nur den Text). Der Schlüssel enthält Glossar UND
+                // Quellsprache — ein Treffer stammt also garantiert aus einem
+                // Lauf mit identischen Vorgaben.
+                deterministicTerminology: false,
             );
             $this->usageListener?->onTranslation($result);
 
             return $result;
         }
 
-        $result = $this->provider->translate($text, $targetLang, $sourceLang);
+        $result = $this->provider->translate($text, $targetLang, $sourceLang, $options);
         $this->cache?->set($hash, $text, $sourceLang, $targetLang, $result->text, $this->provider->getName());
         $this->usageListener?->onTranslation($result);
 
@@ -110,8 +123,22 @@ final class TranslationService {
 
     /**
      * Cache-Schlüssel nach ADR-0010: SHA-256(text|source|target|provider).
+     * Nicht-Default-Optionen hängen ihren Fingerprint an — bei Defaults bleibt
+     * der Schlüssel identisch zu Einträgen ohne Optionen.
      */
-    public static function cacheHash(string $text, ?string $sourceLang, string $targetLang, string $provider): string {
-        return hash('sha256', $text . '|' . strtolower($sourceLang ?? 'auto') . '|' . strtolower($targetLang) . '|' . $provider);
+    public static function cacheHash(
+        string $text,
+        ?string $sourceLang,
+        string $targetLang,
+        string $provider,
+        ?TranslateOptions $options = null,
+    ): string {
+        $key = $text . '|' . strtolower($sourceLang ?? 'auto') . '|' . strtolower($targetLang) . '|' . $provider;
+
+        if ($options !== null && !$options->isDefault()) {
+            $key .= '|' . $options->fingerprint();
+        }
+
+        return hash('sha256', $key);
     }
 }

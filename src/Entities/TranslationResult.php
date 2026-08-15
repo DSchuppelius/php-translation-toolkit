@@ -31,5 +31,14 @@ final class TranslationResult {
         public readonly int $charCount,
         /** true, wenn die Übersetzung aus dem Cache bedient wurde */
         public readonly bool $fromCache = false,
+        /**
+         * Wurden die übergebenen Glossarbegriffe bei DIESEM Aufruf
+         * deterministisch erzwungen? false auch dann, wenn der Provider
+         * Glossare grundsätzlich beherrscht, aber keine Begriffe übergeben
+         * wurden oder Voraussetzungen fehlten (z.B. DeepL ohne Quellsprache) —
+         * und stets bei Cache-Treffern, denn dort findet keine Übersetzung
+         * statt (der Cache hält nur den Text, nicht die Erzwingungs-Historie).
+         */
+        public readonly bool $deterministicTerminology = false,
     ) {}
 }
