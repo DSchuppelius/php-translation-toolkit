@@ -12,23 +12,33 @@ declare(strict_types=1);
 
 namespace TranslationToolkit\Providers;
 
+use APIToolkit\API\Authentication\ApiKeyAuthentication;
+use APIToolkit\Contracts\Abstracts\API\ClientAbstract;
+use APIToolkit\Exceptions\{ApiException, ForbiddenException, TooManyRequestsException};
+use GuzzleHttp\Client as HttpClient;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Log\LoggerInterface;
+use Throwable;
 use TranslationToolkit\Contracts\Interfaces\TranslationProviderInterface;
 use TranslationToolkit\Entities\TranslationResult;
 use TranslationToolkit\Exceptions\TranslationException;
 
 /**
- * DeepL-Provider auf Basis der REST-API v2 (schlanker curl-Client, ohne SDK).
+ * DeepL-Provider auf Basis der REST-API v2, gebaut auf dem api-toolkit
+ * (Retry mit Backoff, Rate-Limit-Handling, Auth-Abstraktion, Log-Redaktion).
  *
  * Free-Keys (Suffix ":fx") werden automatisch gegen api-free.deepl.com
- * aufgelöst, alle anderen gegen api.deepl.com.
- *
- * Nicht final, damit Tests request() mit vorbereiteten Antworten überschreiben können.
+ * aufgelöst, alle anderen gegen api.deepl.com. Für Tests kann ein
+ * vorbereiteter Guzzle-Client (MockHandler) injiziert werden.
  */
-class DeepLProvider implements TranslationProviderInterface {
+class DeepLProvider extends ClientAbstract implements TranslationProviderInterface {
     public const NAME = 'deepl';
 
     private const API_URL_PRO = 'https://api.deepl.com';
     private const API_URL_FREE = 'https://api-free.deepl.com';
+
+    /** DeepL-Kontingent erschöpft (nicht-standardisierter Statuscode) */
+    private const HTTP_QUOTA_EXCEEDED = 456;
 
     /** @var list<string> DeepL-Zielsprachen (ISO 639-1, Stand 2026) */
     private const TARGET_LANGUAGES = [
@@ -37,17 +47,23 @@ class DeepLProvider implements TranslationProviderInterface {
         'ru', 'sk', 'sl', 'sv', 'th', 'tr', 'uk', 'vi', 'zh',
     ];
 
-    private readonly string $baseUrl;
-
     public function __construct(
+        #[\SensitiveParameter]
         private readonly string $apiKey,
         ?string $baseUrl = null,
-        private readonly int $timeoutSeconds = 10,
+        ?LoggerInterface $logger = null,
+        ?HttpClient $httpClient = null,
     ) {
-        $this->baseUrl = rtrim(
+        parent::__construct(
             $baseUrl ?? (str_ends_with($apiKey, ':fx') ? self::API_URL_FREE : self::API_URL_PRO),
-            '/'
+            $logger,
+            false,
+            $httpClient
         );
+
+        if ($this->isAvailable()) {
+            $this->setAuthentication(new ApiKeyAuthentication('DeepL-Auth-Key ' . $apiKey, 'Authorization'));
+        }
     }
 
     public function getName(): string {
@@ -56,10 +72,6 @@ class DeepLProvider implements TranslationProviderInterface {
 
     public function isAvailable(): bool {
         return trim($this->apiKey) !== '';
-    }
-
-    public function getBaseUrl(): string {
-        return $this->baseUrl;
     }
 
     public function getSupportedTargetLanguages(): array {
@@ -79,9 +91,10 @@ class DeepLProvider implements TranslationProviderInterface {
             $payload['source_lang'] = strtoupper($sourceLang);
         }
 
-        $response = $this->request('POST', '/v2/translate', $payload);
+        $response = $this->send('POST', '/v2/translate', ['json' => $payload]);
+        $data = self::decodeJson($response);
 
-        $translation = $response['translations'][0] ?? null;
+        $translation = $data['translations'][0] ?? null;
         if (!is_array($translation) || !isset($translation['text']) || !is_string($translation['text'])) {
             throw new TranslationException('Unerwartete DeepL-Antwort: translations[0].text fehlt');
         }
@@ -105,71 +118,49 @@ class DeepLProvider implements TranslationProviderInterface {
      * @return array{characterCount: int, characterLimit: int}
      */
     public function getUsage(): array {
-        $response = $this->request('GET', '/v2/usage', []);
+        if (!$this->isAvailable()) {
+            throw new TranslationException('DeepL-API-Key ist nicht konfiguriert');
+        }
+
+        $response = $this->send('GET', '/v2/usage');
+        $data = self::decodeJson($response);
 
         return [
-            'characterCount' => (int) ($response['character_count'] ?? 0),
-            'characterLimit' => (int) ($response['character_limit'] ?? 0),
+            'characterCount' => (int) ($data['character_count'] ?? 0),
+            'characterLimit' => (int) ($data['character_limit'] ?? 0),
         ];
     }
 
     /**
-     * Führt einen API-Request aus und dekodiert die JSON-Antwort.
+     * Führt den Request über den Retry-Pfad des api-toolkit aus und übersetzt
+     * dessen typisierte Exceptions in die TranslationException des Ports.
      *
-     * @param array<string, mixed> $payload
-     * @return array<string, mixed>
-     * @throws TranslationException
+     * @param array<string, mixed> $options
      */
-    protected function request(string $method, string $path, array $payload): array {
-        $handle = curl_init($this->baseUrl . $path);
-        if ($handle === false) {
-            throw new TranslationException('curl konnte nicht initialisiert werden');
-        }
-
-        $headers = ['Authorization: DeepL-Auth-Key ' . $this->apiKey];
-        $options = [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => $this->timeoutSeconds,
-            CURLOPT_TIMEOUT => $this->timeoutSeconds,
-        ];
-
-        if ($method === 'POST') {
-            try {
-                $body = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-            } catch (\JsonException $e) {
-                curl_close($handle);
-                throw new TranslationException('Payload konnte nicht kodiert werden: ' . $e->getMessage(), 0, $e);
-            }
-            $options[CURLOPT_POST] = true;
-            $options[CURLOPT_POSTFIELDS] = $body;
-            $headers[] = 'Content-Type: application/json';
-        }
-
-        $options[CURLOPT_HTTPHEADER] = $headers;
-        curl_setopt_array($handle, $options);
-
-        $responseBody = curl_exec($handle);
-        if ($responseBody === false) {
-            $error = curl_error($handle);
-            curl_close($handle);
-            throw new TranslationException('DeepL-Anfrage fehlgeschlagen: ' . $error);
-        }
-
-        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-        curl_close($handle);
-
-        if ($status === 403) {
-            throw new TranslationException('DeepL-Authentifizierung fehlgeschlagen (HTTP 403) — API-Key prüfen');
-        }
-        if ($status === 456) {
-            throw new TranslationException('DeepL-Zeichenkontingent erschöpft (HTTP 456)');
-        }
-        if ($status >= 400) {
-            throw new TranslationException(sprintf('DeepL-Fehler HTTP %d: %s', $status, substr((string) $responseBody, 0, 300)));
-        }
-
+    private function send(string $method, string $path, array $options = []): ResponseInterface {
         try {
-            $decoded = json_decode((string) $responseBody, true, 512, JSON_THROW_ON_ERROR);
+            return $this->requestWithRetry($method, $path, $options);
+        } catch (ForbiddenException $e) {
+            throw new TranslationException('DeepL-Authentifizierung fehlgeschlagen (HTTP 403) — API-Key prüfen', 403, $e);
+        } catch (TooManyRequestsException $e) {
+            throw new TranslationException('DeepL-Rate-Limit erreicht (HTTP 429)', 429, $e);
+        } catch (ApiException $e) {
+            if ($e->getCode() === self::HTTP_QUOTA_EXCEEDED) {
+                throw new TranslationException('DeepL-Zeichenkontingent erschöpft (HTTP 456)', self::HTTP_QUOTA_EXCEEDED, $e);
+            }
+
+            throw new TranslationException(sprintf('DeepL-Fehler HTTP %d: %s', $e->getCode(), $e->getMessage()), $e->getCode(), $e);
+        } catch (Throwable $e) {
+            throw new TranslationException('DeepL-Anfrage fehlgeschlagen: ' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function decodeJson(ResponseInterface $response): array {
+        try {
+            $decoded = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
         } catch (\JsonException $e) {
             throw new TranslationException('DeepL-Antwort ist kein gültiges JSON: ' . $e->getMessage(), 0, $e);
         }

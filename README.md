@@ -1,7 +1,8 @@
 # php-translation-toolkit
 
 Schlankes Übersetzungs-Toolkit mit Provider-Abstraktion, Cache-Port und
-DeepL-Provider (reiner curl-Client, ohne externe Abhängigkeiten).
+DeepL-Provider auf Basis von `daniel-jorg-schuppelius/php-api-toolkit`
+(Retry mit Backoff, Rate-Limit-Handling, Auth-Abstraktion, Log-Redaktion).
 
 Entwurfsgrundlage: [ADR-0010](../ckonverter-architecture/adr/0010-translation-service-with-cache.md)
 (Übersetzungsdienst mit Translation-Cache und Nutzungserfassung).
@@ -14,7 +15,7 @@ Entwurfsgrundlage: [ADR-0010](../ckonverter-architecture/adr/0010-translation-se
 | `TranslationProviderInterface` | Port für Provider (DeepL, LibreTranslate, ...) |
 | `TranslationCacheInterface` | Port für den globalen Übersetzungs-Cache (DB-Implementierung beim Host) |
 | `TranslationUsageListenerInterface` | Port für die Nutzungserfassung (Berechnungsgrundlage, auch Cache-Hits) |
-| `Providers\DeepLProvider` | DeepL REST-API v2 via curl; Free-Keys (`…:fx`) → api-free.deepl.com |
+| `Providers\DeepLProvider` | DeepL REST-API v2 via api-toolkit `ClientAbstract`; Free-Keys (`…:fx`) → api-free.deepl.com; für Tests Guzzle-Client injizierbar |
 | `Caches\ArrayTranslationCache` | In-Memory-Cache für Tests/Kurzläufer |
 | `TranslationRegistry` | Statische Injektion für Umgebungen ohne Konstruktor-DI (analog `LoggerRegistry`) |
 
