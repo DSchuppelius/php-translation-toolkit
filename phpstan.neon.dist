@@ -1,0 +1,10 @@
+parameters:
+    level: 8
+    # Gegen die gesamte unterstützte PHP-Spanne (composer: >=8.1 <8.6) analysieren.
+    phpVersion:
+        min: 80100
+        max: 80599
+    paths:
+        - src
+        - tests
+    tmpDir: var/phpstan
