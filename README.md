@@ -24,6 +24,7 @@ Entwurfsgrundlage: [ADR-0010](../ckonverter-architecture/adr/0010-translation-se
 | `Providers\LibreTranslateProvider` | Selbst gehostet, Glossar über Token-Maskierung |
 | `Caches\ArrayTranslationCache` | In-Memory-Cache für Tests/Kurzläufer |
 | `Stores\InMemoryGlossaryIdStore` | Glossar-ID für die Prozesslaufzeit (Tests/Kurzläufer) |
+| `Providers\TransliterationProvider` | Umschrift ohne externen Dienst (deterministisch, offline) — als Notnagel in der Fallback-Kette oder für Tests |
 | `Providers\CompositeProvider` | Fallback-Kette: erster verfügbarer Provider übersetzt, bei Fehlern der nächste |
 | `TranslationRegistry` | Statische Injektion für Umgebungen ohne Konstruktor-DI (analog `LoggerRegistry`) |
 
@@ -125,3 +126,7 @@ composer lint        # PHPStan (Level 8)
 composer format      # Pint (Check)
 composer qa          # alles
 ```
+
+## Versionen
+
+Veröffentlichungen hängen als Git-Tags (`git tag --sort=-v:refname`, zuletzt v0.6). Eine eigene Änderungsdatei gibt es nicht — maßgeblich sind Tags und Commit-Historie.
