@@ -33,6 +33,15 @@ abstract class AbstractHttpTranslationProvider extends ClientAbstract implements
      * @param array<string, mixed> $options
      */
     protected function send(string $method, string $path, array $options = []): ResponseInterface {
+        // Das api-toolkit wiederholt nicht-idempotente Methoden seit 1.6 nicht
+        // mehr, sobald der Request den Server erreicht haben koennte -- gegen
+        // Doppel-Wirkungen wie doppelt angelegte Datensaetze. Uebersetzen ist
+        // seiteneffektfrei: dieselbe Anfrage liefert dieselbe Antwort und legt
+        // serverseitig nichts an, ein fehlgeschlagener Versuch hinterlaesst
+        // also nichts, was ein zweiter verdoppeln koennte. Ohne dieses Opt-in
+        // reicht ein einzelnes 503 oder 429 bis zum Aufrufer durch.
+        $options['retry_non_idempotent'] ??= true;
+
         try {
             return $this->requestWithRetry($method, $path, $options);
         } catch (ApiException $e) {
