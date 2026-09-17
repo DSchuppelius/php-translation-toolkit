@@ -226,7 +226,7 @@ final class TranslationServiceTest extends TestCase {
         $cache = new ArrayTranslationCache;
         $service = new TranslationService($this->createProvider(), $cache);
 
-        // Ersten Text vorwärmen → beim Batch-Lauf ein Cache-Hit, ein Miss
+        // Ersten Text vorwärmen -> beim Batch-Lauf ein Cache-Hit, ein Miss
         $service->translate('Привет мир, как дела?');
         $results = $service->translateMany(['Привет мир, как дела?', 'Дополнительный текст', '  ']);
 

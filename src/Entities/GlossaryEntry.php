@@ -13,7 +13,7 @@ declare(strict_types=1);
 namespace TranslationToolkit\Entities;
 
 /**
- * Ein zu erzwingender Glossarbegriff: Quellterm → feste Zielübersetzung.
+ * Ein zu erzwingender Glossarbegriff: Quellterm -> feste Zielübersetzung.
  * Einträge mit leerer Zielübersetzung werden von den Providern übersprungen
  * ({@see TranslateOptions::glossaryEntries()}).
  */

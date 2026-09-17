@@ -21,8 +21,8 @@ use TranslationToolkit\Entities\{CachedTranslation, TranslateOptions, Translatio
 use TranslationToolkit\Exceptions\TranslationException;
 
 /**
- * Orchestriert Übersetzungen: Cache prüfen → Provider aufrufen → Cache füllen
- * → Nutzung melden (ADR-0010-Flow).
+ * Orchestriert Übersetzungen: Cache prüfen -> Provider aufrufen -> Cache füllen
+ * -> Nutzung melden (ADR-0010-Flow).
  *
  * $defaultOptions (z.B. ein Mandanten-Glossar des Hosts) greifen immer dann,
  * wenn der Aufrufer keine eigenen Optionen übergibt.

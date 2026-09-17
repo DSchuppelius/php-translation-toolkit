@@ -302,7 +302,7 @@ final class DeepLProviderTest extends TestCase {
         $provider->translate('invoice date', 'de', 'en', $options);
         $provider->translate('invoice date is due', 'de', 'en', $options);
 
-        // Anlage + 2× Übersetzung — KEIN zweiter Glossar-Sync
+        // Anlage + 2x Übersetzung — KEIN zweiter Glossar-Sync
         $this->assertCount(3, $this->history);
         $this->assertSame('/v3/glossaries', $this->requestAt(0)->getUri()->getPath());
         $this->assertSame('/v2/translate', $this->requestAt(1)->getUri()->getPath());
@@ -325,7 +325,7 @@ final class DeepLProviderTest extends TestCase {
             glossary: [new GlossaryEntry('invoice date', 'Rechnungsdatum')]
         ));
 
-        // Geänderte Einträge → PUT auf das bestehende Glossar vor der zweiten Übersetzung
+        // Geänderte Einträge -> PUT auf das bestehende Glossar vor der zweiten Übersetzung
         $this->assertCount(4, $this->history);
         $this->assertSame('PUT', $this->requestAt(2)->getMethod());
         $this->assertSame('/v3/glossaries/gl-1/dictionaries', $this->requestAt(2)->getUri()->getPath());

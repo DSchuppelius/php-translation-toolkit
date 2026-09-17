@@ -20,7 +20,7 @@ use Transliterator;
 
 /**
  * Romanisiert nicht-lateinische Schrift, statt zu übersetzen ("АРХЦЕНТЪР-А ООД"
- * → "ARHCENT'R-A OOD", "カザマ ケイスケ" → "kazama keisuke").
+ * -> "ARHCENT'R-A OOD", "カザマ ケイスケ" -> "kazama keisuke").
  *
  * Kein Übersetzungsdienst, sondern der verlässliche Boden darunter: offline,
  * deterministisch, ohne Kosten. Gedacht als letztes Glied einer

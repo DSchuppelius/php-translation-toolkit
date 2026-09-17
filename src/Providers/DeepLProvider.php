@@ -213,7 +213,7 @@ class DeepLProvider extends AbstractHttpTranslationProvider {
         $tsv = self::toTsv($entries);
         $fingerprint = hash('sha256', strtoupper($sourceLang) . '|' . strtoupper($targetLang) . '|' . $tsv);
 
-        // Unverändertes Glossar → kein Remote-Sync nötig (spart pro
+        // Unverändertes Glossar -> kein Remote-Sync nötig (spart pro
         // Übersetzung einen PUT; der Fingerprint überlebt in persistenten
         // Stores auch Prozessgrenzen)
         $glossaryId = $this->glossaryIdStore->get();
@@ -235,7 +235,7 @@ class DeepLProvider extends AbstractHttpTranslationProvider {
 
                 return $glossaryId;
             } catch (TranslationException) {
-                // Glossar remote verschwunden oder nicht erreichbar → Neuanlage.
+                // Glossar remote verschwunden oder nicht erreichbar -> Neuanlage.
             }
         }
 

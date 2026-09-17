@@ -43,7 +43,7 @@ abstract class AbstractHttpTranslationProvider extends ClientAbstract implements
     }
 
     /**
-     * HTTP-Fehler → Port-Exception; Provider können Sonderfälle ergänzen
+     * HTTP-Fehler -> Port-Exception; Provider können Sonderfälle ergänzen
      * (z.B. DeepL-Kontingent 456).
      */
     protected function translateApiException(ApiException $e): TranslationException {

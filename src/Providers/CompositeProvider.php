@@ -20,7 +20,7 @@ use TranslationToolkit\Exceptions\TranslationException;
 /**
  * Fallback-Kette über mehrere Provider: Aufrufe gehen an den ersten
  * verfügbaren Provider; scheitert er mit einer TranslationException, kommt
- * der nächste an die Reihe (z.B. LibreTranslate self-hosted → DeepL).
+ * der nächste an die Reihe (z.B. LibreTranslate self-hosted -> DeepL).
  *
  * Der Name ist die stabile Verkettung aller Provider-Namen — er geht in den
  * Cache-Schlüssel ein und darf sich nicht danach richten, wer im Einzelfall

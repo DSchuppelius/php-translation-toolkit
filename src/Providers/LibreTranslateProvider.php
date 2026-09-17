@@ -172,7 +172,7 @@ class LibreTranslateProvider extends AbstractHttpTranslationProvider {
      * getroffene Begriffe landen in der Rückersetzungs-Tabelle.
      *
      * @param list<GlossaryEntry> $entries
-     * @return array{0: string, 1: array<string, string>} [maskierter Text, Token → Zielübersetzung]
+     * @return array{0: string, 1: array<string, string>} [maskierter Text, Token -> Zielübersetzung]
      */
     private static function maskTerms(string $text, array $entries): array {
         $tokens = [];
