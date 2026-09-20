@@ -1,14 +1,21 @@
 {
   "name": "dschuppelius/php-translation-toolkit",
   "description": "Slim translation toolkit with provider abstraction, cache port and a DeepL provider built on php-api-toolkit.",
+  "homepage": "https://github.com/DSchuppelius/php-translation-toolkit",
   "type": "library",
   "license": "MIT",
   "authors": [
     {
       "name": "Daniel Joerg Schuppelius",
-      "email": "info@schuppelius.org"
+      "email": "info@schuppelius.org",
+      "homepage": "https://schuppelius.org",
+      "role": "Developer"
     }
   ],
+  "support": {
+    "issues": "https://github.com/DSchuppelius/php-translation-toolkit/issues",
+    "source": "https://github.com/DSchuppelius/php-translation-toolkit"
+  },
   "autoload": {
     "psr-4": {
       "TranslationToolkit\\": "src/"
