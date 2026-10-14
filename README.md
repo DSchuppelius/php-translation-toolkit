@@ -13,10 +13,10 @@ Entwurfsgrundlage: [ADR-0010](../ckonverter-architecture/adr/0010-translation-se
 | Baustein | Zweck |
 | --- | --- |
 | `TranslationService` | Orchestrierung: Cache prüfen → Provider aufrufen → Cache füllen → Nutzung melden |
-| `TranslationProviderInterface` | Port für Provider (DeepL, Azure, LibreTranslate, ...) |
-| `TranslationCacheInterface` | Port für den globalen Übersetzungs-Cache (DB-Implementierung beim Host) |
-| `TranslationUsageListenerInterface` | Port für die Nutzungserfassung (Berechnungsgrundlage, auch Cache-Hits) |
-| `GlossaryIdStoreInterface` | Port für die Persistenz einer Provider-Glossar-ID (DeepL v3) |
+| `Contracts\Interfaces\TranslationProviderInterface` | Port für Provider (DeepL, Azure, LibreTranslate, ...) |
+| `Contracts\Interfaces\TranslationCacheInterface` | Port für den globalen Übersetzungs-Cache (DB-Implementierung beim Host) |
+| `Contracts\Interfaces\TranslationUsageListenerInterface` | Port für die Nutzungserfassung (Berechnungsgrundlage, auch Cache-Hits) |
+| `Contracts\Interfaces\GlossaryIdStoreInterface` | Port für die Persistenz einer Provider-Glossar-ID (DeepL v3) |
 | `Entities\TranslateOptions` | Format, Förmlichkeit, Glossarbegriffe je Aufruf |
 | `Entities\TranslationResult` | Ergebnis inkl. `charCount`, `fromCache`, `deterministicTerminology` |
 | `Providers\DeepLProvider` | DeepL REST v2 + natives v3-Glossar; Free-Keys (`…:fx`) → api-free.deepl.com |
@@ -57,6 +57,9 @@ if (TranslationRegistry::isAvailable() && TranslationService::needsTranslation($
 ### Batch, Default-Optionen und Fallback
 
 ```php
+use TranslationToolkit\Entities\TranslateOptions;
+use TranslationToolkit\Providers\{CompositeProvider, DeepLProvider, LibreTranslateProvider};
+
 // Viele Texte: Cache-Treffer einzeln, Misses gebündelt (DeepL 50/Azure 100 je Request)
 $results = $service->translateMany($verwendungszwecke, 'de', 'ru');
 
@@ -129,4 +132,4 @@ composer qa          # alles
 
 ## Versionen
 
-Veröffentlichungen hängen als Git-Tags (`git tag --sort=-v:refname`, zuletzt v0.6). Eine eigene Änderungsdatei gibt es nicht — maßgeblich sind Tags und Commit-Historie.
+Veröffentlichungen hängen als Git-Tags (`git tag --sort=-v:refname`, zuletzt v0.6.1). Eine eigene Änderungsdatei gibt es nicht — maßgeblich sind Tags und Commit-Historie.
